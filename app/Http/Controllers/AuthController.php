@@ -61,7 +61,43 @@ class AuthController extends Controller
 
     public function logout()
     {
-        JWTAuth::invalidate(JWTAuth::getToken());
-        return response()->json(['message' => 'logged out'], 200);
+        try {
+            JWTAuth::invalidate(JWTAuth::getToken());
+        return response()->json(['message' => 'Desconectado'], 200);
+        } catch (JWTException $exception) {
+           return response()->json(['error' => 'No se pudo cerrar la sesión',500]);
+        }
+    }
+
+    public function userUpdate(Request $request){
+       
+        $user = Auth::user();
+        
+        $validator = Validator::make($request->all(),[
+            'name' => 'sometimes|string|min:2|max:100',
+            'email' => 'sometimes|string|email|min:10|max:75|unique:users,email,' . $user->id,
+            'password' => 'sometimes|string|min:10|confirmed',
+        ]);
+
+        if($validator->fails()){
+            return response()->json($validator -> errors(),422);
+        }
+
+        if($request -> has('name')){
+            $user -> name = $request->name;
+        }
+
+        if($request -> has('email')){
+            $user -> email  = $request -> email;
+        }
+
+        if($request -> has('password')){
+            $user -> password = Hash::make($request -> password);
+        }
+
+        $user -> save();
+
+        return response()->json(['message' => 'Datos Actualizados']);
+
     }
 }
