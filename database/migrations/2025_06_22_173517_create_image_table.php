@@ -17,7 +17,7 @@ return new class extends Migration
             $table->text('url');
 
             //Relacion polimorfica MORPH
-            $table->morphs('imageable');
+            $table->nullableMorphs('imageable');
 
             $table->timestamps();
         });
