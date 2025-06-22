@@ -15,6 +15,11 @@ class IsAdmin
      */
     public function handle(Request $request, Closure $next): Response
     {
-        return $next($request);
+        $user = auth('api')->user();
+         if ($user && $user->role == 'admin') {
+                return $next($request);
+            }else{
+                return response()->json(['message' => 'You are not an Admin'], 403);
+            }
     }
 }

@@ -20,6 +20,10 @@ class User extends Authenticatable implements JWTSubject
     public function getJWTCustomClaims(){
         return [];
     }
+
+    public function images(){
+        return $this->morphMany(Image::class, 'imageable');
+    }
     /**
      * The attributes that are mass assignable.
      *
