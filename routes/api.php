@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\ImageController;
 use App\Http\Middleware\IsAdmin;
 use App\Http\Middleware\IsUserAuth;
 use Illuminate\Http\Request;
@@ -20,6 +21,7 @@ Route::middleware(IsUserAuth::class)->group(function (){
     Route::controller(AuthController::class)->group(function (){
         Route::post('logout', 'logout');
         Route::post('me', 'getUser');
+        Route::post('updateProfile','userUpdate');
     });
 });
 
