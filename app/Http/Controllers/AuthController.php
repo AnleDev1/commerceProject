@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use Illuminate\Support\Str;
 use App\Models\Image;
+use App\Models\RefreshToken;
 use Illuminate\Support\Facades\Hash;
 use App\Models\User;
 use Cloudinary\Cloudinary;
@@ -25,72 +27,83 @@ class AuthController extends Controller
 
     public function register(Request $request)
     {
-        //Iniciamos la transacción para verificar que todos los cambios se apliquen juntos
         DB::beginTransaction();
-        try {
 
-            $validator =  Validator::make($request->All(), [
+        try {
+            $validator = Validator::make($request->all(), [
                 'name' => 'required|string|min:2|max:10',
                 'email' => 'required|email|string|min:10|max:75|unique:users',
                 'password' => 'required|string|min:10|confirmed',
                 'image' => 'nullable|image|max:2048',
             ]);
 
-            //Si la validacion falla, devolvemos el errores
             if ($validator->fails()) {
                 return response()->json(['error' => $validator->errors()], 422);
             }
 
-            //Creamos el usuario con los datos validados
+            // Crear usuario
             $user = User::create([
                 'name' => $request->get('name'),
                 'role' => 'user',
-                'password' =>  bcrypt($request->get('password')),
-                'email' => $request->get('email')
+                'password' => bcrypt($request->get('password')),
+                'email' => $request->get('email'),
             ]);
 
             $image = null;
 
-            // Verificamos si el request incluye un archivo de imagen
             if ($request->hasFile('image')) {
-
-                // Subimos la imagen a Cloudinary, especificando la carpeta con el ID del usuario
                 $uploadedFileUrl = $this->cloudinary->uploadApi()->upload(
                     $request->file('image')->getRealPath(),
-                    [
-                        'folder' => 'usuarios/' . $user->id
-                    ]
+                    ['folder' => 'usuarios/' . $user->id]
                 );
 
-                // Creamos un nuevo registro de imagen con los datos devueltos por Cloudinary
                 $image = new Image([
-                    'public_id' => $uploadedFileUrl['public_id'], // Identificador único en Cloudinary
-                    'url' => $uploadedFileUrl['secure_url']    // URL segura para acceder a la imagen
+                    'public_id' => $uploadedFileUrl['public_id'],
+                    'url' => $uploadedFileUrl['secure_url'],
                 ]);
 
-                // Asociamos esta imagen al usuario guardándola en la relación 'images'
                 $user->images()->save($image);
             }
 
-
+            // Crear access token para el usuario recién registrado
             $token = auth()->login($user);
 
+            // Crear refresh token aleatorio
+            $refreshToken = Str::random(64);
 
-            // Devolvemos respuesta exitosa con datos del nuevo usuario y URL de imagen si la hay
+            // Guardar refresh token en BD con expiración y sin revocar
+            RefreshToken::create([
+                'user_id' => $user->id,
+                'token' => $refreshToken,
+                'expires_at' => now()->addDays(14),
+                'revoked' => false,
+            ]);
+
             DB::commit();
+
             return response()->json([
                 'message' => 'Usuario creado correctamente',
                 'user_id' => $user->id,
-                'token' => $token,
-                'image_url' => $image ? $image->url : null
-
-            ], 201);
+                'access_token' => $token,
+                'token_type' => 'Bearer',
+                'image_url' => $image ? $image->url : null,
+            ], 201)->cookie(
+                'refresh_token',
+                $refreshToken,
+                60 * 24 * 14, // 14 días en minutos
+                '/',
+                null,
+                false,  // Cambiar a true en producción si usas HTTPS
+                true,   // HttpOnly para proteger contra acceso JS
+                false,
+                'Strict'
+            );
         } catch (\Exception $e) {
-            // En caso de error, revertimos la transacción y devolvemos mensaje con error
             DB::rollback();
-            return response()->json(['message' => 'No se pudo registrar el usuario', "error" => $e->getMessage()], 500);
+            return response()->json(['message' => 'No se pudo registrar el usuario', 'error' => $e->getMessage()], 500);
         }
     }
+
 
     public function login(Request $request)
     {
@@ -107,14 +120,45 @@ class AuthController extends Controller
 
         try {
             if (!$token = JWTAuth::attempt($credentials)) {
-                return response()->json(['message' => 'Credenciales invalidas'], 401);
+                return response()->json(['message' => 'Credenciales inválidas'], 401);
             }
 
-            return response()->json(['token' => $token], 200);
+            $user = auth()->user();
+
+            // Crear refresh token aleatorio
+            $refreshToken = Str::random(64);
+
+            // Guardar refresh token en la base de datos con expiración (14 días)
+            RefreshToken::create([
+                'user_id' => $user->id,
+                'token' => $refreshToken,
+                'expires_at' => now()->addDays(14),
+                'revoked' => false,
+            ]);
+
+            // Retorna el access token en JSON y el refresh token en cookie segura HttpOnly
+            return response()
+                ->json([
+                    'access_token' => $token,
+                    'token_type' => 'Bearer',
+                ])
+                ->cookie(
+                    'refresh_token',
+                    $refreshToken,
+                    60 * 24 * 14, // 14 días en minutos
+                    '/',
+                    null,
+                    false,  // Cambiar a true en producción si usas HTTPS
+                    true,   // HttpOnly para evitar acceso por JS
+                    false,
+                    'Strict'
+                );
         } catch (JWTException $exception) {
-            return response()->json(['error' => 'no se pudo generar el token', $exception], 500);
+            return response()->json(['error' => 'No se pudo generar el token', 'details' => $exception->getMessage()], 500);
         }
     }
+
+
 
     public function getUser()
     {
@@ -129,17 +173,38 @@ class AuthController extends Controller
     }
 
 
-    public function logout()
+    public function logout(Request $request)
     {
         try {
+            // Invalida el access token JWT (
             JWTAuth::invalidate(JWTAuth::getToken());
-            $forgetCookie = \Cookie::forget('refresh_token');
 
-            return response()->json(['message' => 'Desconectado'], 200)->withCookie($forgetCookie);
+            // Intenta obtener el refresh token desde la cookie
+            $refreshToken = $request->cookie('refresh_token');
+
+            if ($refreshToken) {
+                $tokenRecord = RefreshToken::where('token', $refreshToken)
+                    ->where('revoked', false)
+                    ->where('expires_at', '>', now())
+                    ->first();
+
+                // Si lo encuentra, lo revoca
+                if ($tokenRecord) {
+                    $tokenRecord->update(['revoked' => true]);
+                }
+            }
+
+            // Limpia la cookie del refresh token en el navegador
+            return response()
+                ->json(['message' => 'Desconectado correctamente'])
+                ->cookie('refresh_token', '', -1, '/', null, false, true, false, 'Strict');
         } catch (JWTException $exception) {
-            return response()->json(['error' => 'No se pudo cerrar la sesión', 500]);
+            return response()->json([
+                'error' => 'No se pudo cerrar la sesión',
+            ], 500);
         }
     }
+
 
     public function userUpdate(Request $request)
     {
@@ -224,32 +289,58 @@ class AuthController extends Controller
 
 
 
+
     public function refresh(Request $request)
     {
         try {
-            // Renovamos el access token actual, usando el refresh token que viene automáticamente en la cookie HttpOnly.
-            $newToken = auth()->refresh();
+            // 1. Obtener el refresh token de la cookie HttpOnly
+            $refreshToken = $request->cookie('refresh_token');
 
-          
-            // - Una nueva cookie llamada 'refresh_token' con el mismo valor (simplificado),
+            if (!$refreshToken) {
+                return response()->json(['error' => 'No se proporcionó refresh token'], 401);
+            }
 
+            // 2. Buscar el refresh token válido en la base de datos (no revocado y no expirado)
+            $tokenRecord = RefreshToken::where('token', $refreshToken)
+                ->where('revoked', false)
+                ->where('expires_at', '>', now())
+                ->first();
+
+            if (!$tokenRecord) {
+
+                return  $this->logout($request);
+            }
+
+            // 3. Marcar el refresh token actual como revocado (rotación)
+            $tokenRecord->update(['revoked' => true]);
+
+            // 4. Generar un nuevo access token para el usuario
+            $newAccessToken = JWTAuth::fromUser($tokenRecord->user);
+
+            // 5. Crear nuevo refresh token aleatorio
+            $newRefreshToken = Str::random(64);
+
+            // 6. Guardar el nuevo refresh token en BD con expiración
+            RefreshToken::create([
+                'user_id' => $tokenRecord->user_id,
+                'token' => $newRefreshToken,
+                'expires_at' => now()->addDays(14),
+                'revoked' => false,
+            ]);
+
+            // 7. Devolver el nuevo access token y establecer cookie HttpOnly con el nuevo refresh token
             return response()
-               //->json(['token' => $newToken]) // El access token que el frontend debe usar en los headers Authorization
-                ->cookie(
-                    'refresh_token',    // Nombre de la cookie
-                    $newToken,          // Valor del token renovado
-                    180,                // Duración: 180 minutos = 3 horas
-                    null,               // Path: null = usa path por defecto (/)
-                    null,               // Dominio: null = actual
-                    false,              // Secure: false en desarrollo (debe ser true en producción con HTTPS)
-                    true,               // HttpOnly: true = JS no puede leer esta cookie → más seguro contra XSS
-                    false,              // Raw: false (el valor se codifica correctamente)
-                    'Strict'            // SameSite: Strict = la cookie no se envía con requests de otros dominios (previene CSRF)
-                );
+                ->json([
+                    'access_token' => $newAccessToken,
+                    'token_type' => 'Bearer',
+                ])
+                ->cookie('refresh_token', $newRefreshToken, 60 * 24 * 14, '/', null, false, true, false, 'Strict');
         } catch (JWTException $e) {
-            
-            // Si algo falla (token inválido o expirado), devolvemos error 401.
-            return response()->json(['error' => 'Token inválido o expirado'], 401);
+            return $this->logout($request);
+            return response()->json([
+                'error' => 'Error al refrescar el token',
+                'message' => $e->getMessage(),
+            ], 401);
         }
     }
 }
