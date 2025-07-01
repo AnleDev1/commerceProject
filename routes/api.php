@@ -16,7 +16,7 @@ Route::get('/user', function (Request $request) {
 //Rutas publicas
 Route::post('register', [AuthController::class, 'register']);
 Route::post('login', [AuthController::class, 'login']);
-  Route::post('/auth/refresh', [AuthController::class, 'refresh']);
+  Route::post('/refresh', [AuthController::class, 'refresh']);
 
 Route::middleware(IsUserAuth::class)->group(function (){
     Route::controller(AuthController::class)->group(function (){
