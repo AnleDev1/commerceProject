@@ -16,10 +16,17 @@ class IsAdmin
     public function handle(Request $request, Closure $next): Response
     {
         $user = auth('api')->user();
-         if ($user && $user->role == 'admin') {
-                return $next($request);
-            }else{
-                return response()->json(['message' => 'You are not an Admin'], 403);
-            }
+
+        if (!$user) {
+
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+
+        if ($user && $user->role == 'admin') {
+            return $next($request);
+        } else {
+            return response()->json(['message' => 'You are not an Admin'], 403);
+        }
     }
 }
